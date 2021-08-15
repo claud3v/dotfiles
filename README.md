@@ -1,3 +1,22 @@
+**Files have been heavily edited by me - you might want to check Mathias's original repository instead of mine. It has a lot more content.**
+
+I use [Oh My ZSH](https://ohmyz.sh). 
+
+Add `source "$HOME/.main"` to `.zshrc` at the end. 
+
+I use following plugins: 
+```
+plugins=(
+ git
+ bundler
+ dotenv
+ osx
+ rake
+ rbenv
+ ruby
+)
+```
+
 # Mathias’s dotfiles
 
 ![Screenshot of my shell prompt](https://i.imgur.com/EkEtphC.png)
