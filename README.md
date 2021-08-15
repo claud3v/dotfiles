@@ -2,7 +2,7 @@
 
 I use [Oh My ZSH](https://ohmyz.sh). 
 
-Add `source "$HOME/dotfiles/.entry"` to `.zshrc` at the end. 
+Add `source "$HOME/.main"` to `.zshrc` at the end. 
 
 I use following plugins: 
 ```
