@@ -1,4 +1,4 @@
-**Files have been heavily edited by me - you might want to check Mathias's original repository instead of mine. It has a lot more content. **
+**Files have been heavily edited by me - you might want to check Mathias's original repository instead of mine. It has a lot more content.**
 
 I use [Oh My ZSH](https://ohmyz.sh). 
 
