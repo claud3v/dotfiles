@@ -4,3 +4,5 @@ alias week='date +%V'
 alias cleanup="find . -type f -name '*.DS_Store' -ls -delete"
 
 alias update='sudo softwareupdate -i -a; brew update; brew upgrade; brew cleanup;'
+
+alias devd='cd ~/dev/workspace'
