@@ -14,3 +14,4 @@ brew install tree
 brew install wget
 brew install rename
 brew install hyperfine
+brew install pyenv
