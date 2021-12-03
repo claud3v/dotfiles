@@ -1,16 +1,16 @@
 **Files have been heavily edited by me - you might want to check Mathias's original repository instead of mine. It has a lot more content.**
 
-I use [Oh My ZSH](https://ohmyz.sh). 
+I use [Oh My ZSH](https://ohmyz.sh).
 
-Add `source "$HOME/.main"` to `.zshrc` at the end. 
+Add `source "$HOME/.main"` to `.zshrc` at the end.
 
-I use following plugins: 
+I use following plugins:
 ```
 plugins=(
  git
  bundler
  dotenv
- osx
+ macos
  rake
  rbenv
  ruby
