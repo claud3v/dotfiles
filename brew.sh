@@ -15,3 +15,4 @@ brew install wget
 brew install rename
 brew install hyperfine
 brew install pyenv
+brew install rbenv
