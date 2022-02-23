@@ -8,3 +8,19 @@ alias update='sudo softwareupdate -i -a; brew update; brew upgrade; brew cleanup
 alias devd='cd ~/dev/workspace'
 
 alias restart='sudo shutdown -r now'
+
+alias ls='exa ${exa_params}'
+
+alias l='exa --git-ignore ${exa_params}'
+
+alias ll='exa --all --header --long ${exa_params}'
+
+alias llm='exa --all --header --long --sort=modified ${exa_params}'
+
+alias la='exa -lbhHigUmuSa'
+
+alias lx='exa -lbhHigUmuSa@'
+
+alias lt='exa --tree'
+
+alias tree='exa --tree'
