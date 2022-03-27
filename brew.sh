@@ -20,3 +20,4 @@ brew install dust
 brew install exa
 brew install bottom
 brew install glances
+brew install go
