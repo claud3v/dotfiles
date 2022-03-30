@@ -21,3 +21,4 @@ brew install exa
 brew install bottom
 brew install glances
 brew install go
+brew install bat
