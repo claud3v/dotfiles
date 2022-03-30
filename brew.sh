@@ -22,3 +22,5 @@ brew install bottom
 brew install glances
 brew install go
 brew install bat
+brew install fzf
+brew install htop
