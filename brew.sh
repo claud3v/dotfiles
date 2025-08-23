@@ -24,3 +24,4 @@ brew install go
 brew install bat
 brew install fzf
 brew install htop
+brew install zoxide
