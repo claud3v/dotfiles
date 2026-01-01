@@ -29,3 +29,23 @@ function sizeOf() {
 		du $arg .[^.]* ./*;
 	fi;
 }
+
+# Split a video into 2 parts of 2 hours each
+split_video_2_hours() {
+    local infile="$1"
+
+    if [ ! -f "$infile" ]; then
+        echo "Error: file not found: $infile"
+        return 1
+    fi
+
+    local base="${infile%.*}"
+
+    ffmpeg -i "$infile" -c copy -t 02:00:00 "${base}-part1.mp4"
+    ffmpeg -i "$infile" -c copy -ss 02:00:00 "${base}-part2.mp4"
+}
+
+# Get the language of the tracks in a MKV file
+mkvlang() {
+  mkvmerge -J "$1" | jq '.tracks[] | {id, language: .properties.language, type}'
+}
