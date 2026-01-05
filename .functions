@@ -46,6 +46,235 @@ split_video_2_hours() {
 }
 
 # Get the language of the tracks in a MKV file
+# Use -e to get only the English tracks
+# Example: mkvlang -e myvideo.mkv
 mkvlang() {
-  mkvmerge -J "$1" | jq '.tracks[] | {id, language: .properties.language, type}'
+  local eng_only=false
+  local file
+
+  if [ "$1" = "-e" ]; then
+    eng_only=true
+    shift
+  fi
+
+  file="$1"
+
+  if [ -z "$file" ]; then
+    echo "Usage: mkvlang [-e] <file.mkv>"
+    return 1
+  fi
+
+  if $eng_only; then
+    mkvmerge -J "$file" | jq '
+      .tracks[]
+      | select(.properties.language == "eng" or .properties.language == "und")
+      | {id, language: .properties.language, type}
+    '
+  else
+    mkvmerge -J "$file" | jq '
+      .tracks[]
+      | {id, language: .properties.language, type}
+    '
+  fi
+}
+
+# Extract the English audio and subtitle tracks from a MKV file
+# Parameter:
+# 1. The input MKV file
+# 2. The audio track ID
+# 3. The subtitle track ID
+# Example: mkveng myvideo.mkv 1 2
+mkveng() {
+  local infile="$1"
+  local audio_id="$2"
+  local sub_id="$3"
+
+  if [ -z "$infile" ] || [ -z "$audio_id" ] || [ -z "$sub_id" ]; then
+    echo "Usage: mkveng <file.mkv> <audio_track_id> <subtitle_track_id>"
+    return 1
+  fi
+
+  if [ ! -f "$infile" ]; then
+    echo "File not found: $infile"
+    return 1
+  fi
+
+  local outfile="${infile%.mkv}[ENG].mkv"
+
+  mkvmerge -o "$outfile" \
+    --audio-tracks "$audio_id" \
+    --subtitle-tracks "$sub_id" \
+    --default-track "${audio_id}:true"  --forced-track "${audio_id}:false" \
+    --default-track "${sub_id}:true"    --forced-track "${sub_id}:false" \
+    --language "${audio_id}:eng" \
+    --language "${sub_id}:eng" \
+    --track-name "${audio_id}:English" \
+    --track-name "${sub_id}:English" \
+    "$infile"
+}
+
+# Set the title of a MKV file
+# Parameter:
+# 1. The input MKV file
+# 2. The title
+# Example: mkvtitle myvideo.mkv "Movie Title (Year)"
+mkvtitle() {
+  local file="$1"
+  local title="$2"
+
+  if [ -z "$file" ] || [ -z "$title" ]; then
+    echo "Usage: mkvtitle <file.mkv> \"Movie Title (Year)\""
+    return 1
+  fi
+
+  if [ ! -f "$file" ]; then
+    echo "File not found: $file"
+    return 1
+  fi
+
+  mkvpropedit "$file" \
+    --edit info \
+    --set "title=$title"
+}
+
+# Set the title of a MP4 file
+# Parameter:
+# 1. The input MP4 file
+# 2. The title
+# Example: fftitle myvideo.mp4 "Movie Title (Year)"
+fftitle() {
+  local infile="$1"
+  local title="$2"
+
+  if [ -z "$infile" ] || [ -z "$title" ]; then
+    echo "Usage: fftitle <file.mp4> \"Title String\""
+    return 1
+  fi
+
+  if [ ! -f "$infile" ]; then
+    echo "File not found: $infile"
+    return 1
+  fi
+
+  local tmpfile="${infile%.mp4}.tmp.mp4"
+
+  ffmpeg -i "$infile" \
+    -c copy \
+    -metadata "title=$title" \
+    "$tmpfile" \
+  && mv -f "$tmpfile" "$infile"
+}
+
+# Extract the English audio and subtitle tracks from all MKV files recursively
+# Parameter:
+# 1. The input directory
+# Example: mkvengdir /path/to/movies
+mkvengdir() {
+  local dir="$1"
+
+  if [ -z "$dir" ]; then
+    echo "Usage: mkvengdir <directory>"
+    return 1
+  fi
+
+  if [ ! -d "$dir" ]; then
+    echo "Not a directory: $dir"
+    return 1
+  fi
+
+  find "$dir" -type f -name "*.mkv" -print0 | while IFS= read -r -d '' f; do
+    echo "Processing: $f"
+
+    # Get mkvmerge JSON once
+    local json
+    json=$(mkvmerge -J "$f")
+
+    # Prefer ENG audio, fallback to UND
+    local audio_id
+    audio_id=$(echo "$json" | jq -r '
+      .tracks[]
+      | select(.type == "audio")
+      | select(.properties.language == "eng")
+      | .id
+    ' | head -n 1)
+
+    if [ -z "$audio_id" ]; then
+      audio_id=$(echo "$json" | jq -r '
+        .tracks[]
+        | select(.type == "audio")
+        | select(.properties.language == "und")
+        | .id
+      ' | head -n 1)
+    fi
+
+    # Prefer ENG subtitles, fallback to UND
+    local sub_id
+    sub_id=$(echo "$json" | jq -r '
+      .tracks[]
+      | select(.type == "subtitles")
+      | select(.properties.language == "eng")
+      | .id
+    ' | head -n 1)
+
+    if [ -z "$sub_id" ]; then
+      sub_id=$(echo "$json" | jq -r '
+        .tracks[]
+        | select(.type == "subtitles")
+        | select(.properties.language == "und")
+        | .id
+      ' | head -n 1)
+    fi
+
+    # Safety check
+    if [ -z "$audio_id" ] || [ -z "$sub_id" ]; then
+      echo "  → Skipping (missing ENG/UND audio or subtitle)"
+      echo
+      continue
+    fi
+
+    local outfile="${f%.mkv}[ENG].mkv"
+
+    echo "  → Audio track ID: $audio_id"
+    echo "  → Subtitle track ID: $sub_id"
+    echo "  → Output: $outfile"
+
+    mkvmerge -o "$outfile" \
+      --audio-tracks "$audio_id" \
+      --subtitle-tracks "$sub_id" \
+      --default-track "${audio_id}:true"  --forced-track "${audio_id}:false" \
+      --default-track "${sub_id}:true"    --forced-track "${sub_id}:false" \
+      --language "${audio_id}:eng" \
+      --language "${sub_id}:eng" \
+      --track-name "${audio_id}:English" \
+      --track-name "${sub_id}:English" \
+      "$f"
+
+    echo
+  done
+}
+
+# Clean up MKV files in a directory - removes non [ENG] tags updates filenames
+# Parameter:
+# 1. The input directory
+# Example: clean_eng_mkvs /path/to/movies
+cleanNonEngMkvs() {
+  local target_dir="$1"
+
+  if [[ -z "$target_dir" ]]; then
+    echo "Usage: clean_eng_mkvs /path/to/directory"
+    return 1
+  fi
+
+  if [[ ! -d "$target_dir" ]]; then
+    echo "Error: '$target_dir' is not a directory"
+    return 1
+  fi
+
+  # Remove all non-[ENG] MKVs
+  find "$target_dir" -type f -name "*.mkv" ! -name "*[ENG]*" -exec rm -f {} +
+
+  # Rename [ENG] files to remove the tag
+  find "$target_dir" -type f -name "*[ENG]*.mkv" -print0 | while IFS= read -r -d '' file; do
+    mv "$file" "${file//\[ENG\]/}"
+  done
 }
