@@ -278,3 +278,37 @@ cleanNonEngMkvs() {
     mv "$file" "${file//\[ENG\]/}"
   done
 }
+
+# Shift the subtitle file by the given offset in seconds
+# Parameter:
+# 1. The subtitle file
+# 2. The offset in seconds
+# Example: shiftSubtitle myvideo.srt 10
+shiftSubtitle() {
+    local subfile="$1"
+    local offset="$2"
+
+    if [[ -z "$subfile" || -z "$offset" ]]; then
+        echo "Usage: shift_subtitle /path/to/file.srt OFFSET_IN_SECONDS"
+        return 1
+    fi
+
+    if [[ ! -f "$subfile" ]]; then
+        echo "Error: '$subfile' does not exist"
+        return 1
+    fi
+
+    # Use a template for macOS compatibility
+    local tmpfile="$(mktemp /tmp/subshift.XXXXXX.srt)"
+
+    ffmpeg -y -itsoffset "$offset" -i "$subfile" -c copy "$tmpfile" >/dev/null 2>&1
+
+    if [[ $? -eq 0 ]]; then
+        mv "$tmpfile" "$subfile"
+        echo "Shifted '$subfile' by $offset seconds."
+    else
+        echo "Error shifting '$subfile'"
+        rm -f "$tmpfile"
+        return 1
+    fi
+}
