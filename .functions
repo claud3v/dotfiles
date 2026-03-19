@@ -279,6 +279,41 @@ cleanNonEngMkvs() {
   done
 }
 
+# Clean up MP4 files in a directory - removes filenames containing literal [UPDATED]
+# Parameter:
+# 1. The input directory
+# Example: cleanUpdatedMp4s /path/to/movies
+cleanUpdatedMp4s() {
+  local target_dir="$1"
+
+  if [[ -z "$target_dir" ]]; then
+    echo "Usage: cleanUpdatedMp4s /path/to/directory"
+    return 1
+  fi
+
+  if [[ ! -d "$target_dir" ]]; then
+    echo "Error: '$target_dir' is not a directory"
+    return 1
+  fi
+
+  # For each `*[UPDATED]*.mp4`, delete the corresponding original (with `[UPDATED]`
+  # removed) and rename the updated file to the original name.
+  find "$target_dir" -type f -name '*[[]UPDATED[]]*.mp4' -print0 | while IFS= read -r -d '' file; do
+    local newfile="${file//\[UPDATED\]/}"
+
+    if [[ -z "$newfile" || "$newfile" == "$file" ]]; then
+      continue
+    fi
+
+    # Delete old/original if present.
+    if [[ -e "$newfile" ]]; then
+      rm -f "$newfile"
+    fi
+
+    mv -f "$file" "$newfile"
+  done
+}
+
 # Shift the subtitle file by the given offset in seconds
 # Parameter:
 # 1. The subtitle file
@@ -311,4 +346,37 @@ shiftSubtitle() {
         rm -f "$tmpfile"
         return 1
     fi
+}
+
+# Copy an MP4 and update its metadata title, appending [UPDATED] to filename.
+# Parameters:
+# 1. Input MP4 file path
+# 2. Title string
+# Example: fftitle_updated "Zoolander (2001) - [1080p].mp4" "Zoolander (2001)"
+fftitle_update() {
+    local infile="$1"
+    local title="$2"
+
+    if [[ -z "$infile" || -z "$title" ]]; then
+        echo "Usage: fftitle_updated /path/to/file.mp4 \"Title String\""
+        return 1
+    fi
+
+    if [[ ! -f "$infile" ]]; then
+        echo "File not found: '$infile'"
+        return 1
+    fi
+
+    if [[ "${infile##*.}" != "mp4" ]]; then
+        echo "Error: input must be an .mp4 file: '$infile'"
+        return 1
+    fi
+
+    local outfile="${infile%.mp4}[UPDATED].mp4"
+    if [[ -e "$outfile" ]]; then
+        echo "Error: output already exists: '$outfile'"
+        return 1
+    fi
+
+    ffmpeg -i "$infile" -c copy -metadata "title=$title" "$outfile"
 }
