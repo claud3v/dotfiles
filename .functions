@@ -113,6 +113,44 @@ mkveng() {
     "$infile"
 }
 
+# Create an MKV from an MP4 + an English SRT subtitle file.
+# Parameters:
+# 1. Input MP4 file path
+# 2. Input SRT file path
+# Output:
+# - Same base name as the MP4, but `.mkv` extension.
+mkv_up() {
+  local mp4="$1"
+  local srt="$2"
+
+  if [[ -z "$mp4" || -z "$srt" ]]; then
+    echo "Usage: mkv_up /path/to/file.mp4 /path/to/file.en.srt"
+    return 1
+  fi
+
+  if [[ ! -f "$mp4" ]]; then
+    echo "Error: MP4 not found: '$mp4'"
+    return 1
+  fi
+
+  if [[ ! -f "$srt" ]]; then
+    echo "Error: SRT not found: '$srt'"
+    return 1
+  fi
+
+  local outfile="${mp4%.mp4}.mkv"
+  if [[ -e "$outfile" ]]; then
+    echo "Error: output already exists: '$outfile'"
+    return 1
+  fi
+
+  mkvmerge -o "$outfile" \
+    --language 0:und \
+    "$mp4" \
+    --language 0:eng --track-name 0:'English' \
+    "$srt"
+}
+
 # Set the title of a MKV file
 # Parameter:
 # 1. The input MKV file
