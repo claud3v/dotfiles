@@ -418,3 +418,33 @@ fftitle_update() {
 
     ffmpeg -i "$infile" -c copy -metadata "title=$title" "$outfile"
 }
+
+# Reduce a PNG with pngquant + oxipng.
+# Parameter:
+# 1. Input PNG file path
+# Output:
+# - Same directory as input, but suffixed with `-reduced.png`
+# Example: pngreduce input.png  # -> input-reduced.png
+pngreduce() {
+  local infile="$1"
+
+  if [[ -z "$infile" ]]; then
+    echo "Usage: pngreduce /path/to/input.png"
+    return 1
+  fi
+
+  if [[ ! -f "$infile" ]]; then
+    echo "File not found: '$infile'"
+    return 1
+  fi
+
+  if [[ "${infile##*.}" != "png" ]]; then
+    echo "Error: input must be a .png file: '$infile'"
+    return 1
+  fi
+
+  local outfile="${infile%.png}-reduced.png"
+
+  pngquant --quality=65-85 --force --output "$outfile" -- "$infile" \
+    && oxipng -o max -- "$outfile"
+}
