@@ -17,8 +17,8 @@ def shell(script, *args, input=None):
     )
 
 
-def track(track_id, kind='subtitles', **properties):
-    return {'id': track_id, 'type': kind, 'codec': 'SubRip/SRT',
+def track(track_id, kind='subtitles', codec='SubRip/SRT', **properties):
+    return {'id': track_id, 'type': kind, 'codec': codec,
             'properties': {'language': 'eng', **properties}}
 
 
@@ -58,6 +58,40 @@ class SelectionTests(unittest.TestCase):
 
     def test_ambiguous_full_tracks_require_manual_selection(self):
         self.assertIn('multiple', choose(track(2), track(3))['error'])
+
+    def test_got_forced_and_image_tracks_lose_to_full_srt(self):
+        result = choose(
+            track(5, track_name='English-FORCED-SRT', forced_track=True,
+                  tag_number_of_frames='7'),
+            track(6, track_name='English-SRT', tag_number_of_frames='700'),
+            track(7, codec='VobSub', tag_number_of_frames='7'),
+            track(8, codec='VobSub', tag_number_of_frames='740'))
+        self.assertEqual(result['subtitle']['id'], 6)
+        self.assertIn('preferred text over image', result['reason'])
+
+    def test_text_formats_preferred_over_images(self):
+        for properties in [{'codec': 'SubRip/SRT'}, {'codec': 'SubStationAlpha'},
+                           {'codec': 'WebVTT'},
+                           {'codec': 'unknown', 'codec_id': 'S_TEXT/ASS'}]:
+            with self.subTest(properties=properties):
+                result = choose(track(2, codec='HDMV PGS'), track(3, **properties))
+                self.assertEqual(result['subtitle']['id'], 3)
+
+    def test_forced_or_sparse_text_does_not_beat_full_image(self):
+        for properties in [{'forced_track': True}, {'tag_number_of_frames': '7'}]:
+            with self.subTest(properties=properties):
+                result = choose(track(2, **properties),
+                                track(3, codec='VobSub', tag_number_of_frames='740'))
+                self.assertEqual(result['subtitle']['id'], 3)
+
+    def test_ordinary_image_still_preferred_over_sdh_text(self):
+        result = choose(track(2, codec='VobSub'), track(3, flag_hearing_impaired=True))
+        self.assertEqual(result['subtitle']['id'], 2)
+
+    def test_ambiguous_tracks_in_preferred_format_still_rejected(self):
+        self.assertIn('multiple', choose(track(2), track(3), track(4, codec='VobSub'))['error'])
+        self.assertIn('multiple', choose(track(2, codec='VobSub'),
+                                         track(3, codec='HDMV PGS'))['error'])
 
     def test_unmarked_sparse_track_loses_to_full_sdh(self):
         result = choose(track(2, tag_number_of_frames='37'),

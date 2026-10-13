@@ -219,6 +219,9 @@ _mkveng_select_tracks() {
     def sdh:
       .properties.flag_hearing_impaired == true or
       named("\\b(SDH|CC)\\b|hearing[ -]impaired|closed[ -]captions?");
+    def text_subtitle:
+      (.properties.codec_id // "" | startswith("S_TEXT/")) or
+      (.codec // "" | test("^(SubRip/SRT|SubStationAlpha|WebVTT)$"));
     def cues: (.properties.tag_number_of_frames // "0" | tonumber? // 0);
     def span:
       try (.properties.tag_duration | split(":") | map(tonumber) |
@@ -239,7 +242,12 @@ _mkveng_select_tracks() {
        (cues > 0 and cues < 100 and span > 0 and $duration >= 1200 and
         span < $duration * 0.2)) | not)] as $safe |
     [$safe[] | select(sdh | not)] as $ordinary |
-    (if ($ordinary | length) > 0 then $ordinary else $safe end) as $preferred |
+    (if ($ordinary | length) > 0 then $ordinary else $safe end) as $dialogue |
+    # Prefer text over image subtitles after excluding partial/sparse tracks
+    # and applying the ordinary-dialogue preference. Do not rank by cue count:
+    # image formats and SDH can contain more entries without better dialogue.
+    [$dialogue[] | select(text_subtitle)] as $text |
+    (if ($text | length) > 0 then $text else $dialogue end) as $preferred |
     if ($audio | length) == 0 then {error: "no identified English main audio"}
     elif ($full | length) == 0 then {error: "no identified full English subtitle track"}
     elif ($safe | length) == 0 then {error: "English subtitles look sparse; inspect with mkvlang/mkveng"}
@@ -247,14 +255,17 @@ _mkveng_select_tracks() {
     else {
       audio: ($audio | sort_by(if .properties.default_track then 0 else 1 end, .id) | first),
       subtitle: $preferred[0],
-      reason: (if ($preferred[0] | sdh) then "full English SDH/CC fallback"
-               else "full English dialogue" end),
+      reason: ((if ($preferred[0] | sdh) then "full English SDH/CC fallback"
+                else "full English dialogue" end) +
+               (if ($text | length) > 0 and ($dialogue | length) > ($text | length)
+                then "; preferred text over image subtitles" else "" end)),
       subtitle_name: (if ($preferred[0] | sdh) then "English (SDH)" else "English" end)
     } end
   '
 }
 
 # Recursively remux English main audio and full dialogue subtitles.
+# Prefer ordinary dialogue over SDH, then text over image subtitles.
 # Preview choices without writing media: mkvengdir --dry-run /path/to/movies
 # Ambiguous/unknown-language tracks require explicit IDs via mkveng.
 mkvengdir() {
