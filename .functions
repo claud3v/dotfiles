@@ -203,103 +203,168 @@ fftitle() {
   && mv -f "$tmpfile" "$infile"
 }
 
-# Extract the English audio and subtitle tracks from all MKV files recursively
-# Parameter:
-# 1. The input directory
-# Example: mkvengdir /path/to/movies
-mkvengdir() {
-  local dir="$1"
-
-  if [ -z "$dir" ]; then
-    echo "Usage: mkvengdir <directory>"
-    return 1
-  fi
-
-  if [ ! -d "$dir" ]; then
-    echo "Not a directory: $dir"
-    return 1
-  fi
-
-  find "$dir" -type f -name "*.mkv" -print0 | while IFS= read -r -d '' f; do
-    echo "Processing: $f"
-
-    # Get mkvmerge JSON once
-    local json
-    json=$(mkvmerge -J "$f")
-
-    # Prefer ENG audio, fallback to UND
-    local audio_id
-    audio_id=$(echo "$json" | jq -r '
-      .tracks[]
-      | select(.type == "audio")
-      | select(.properties.language == "eng")
-      | .id
-    ' | head -n 1)
-
-    if [ -z "$audio_id" ]; then
-      audio_id=$(echo "$json" | jq -r '
-        .tracks[]
-        | select(.type == "audio")
-        | select(.properties.language == "und")
-        | .id
-      ' | head -n 1)
-    fi
-
-    # Prefer ENG subtitles, fallback to UND
-    local sub_id
-    sub_id=$(echo "$json" | jq -r '
-      .tracks[]
-      | select(.type == "subtitles")
-      | select(.properties.language == "eng")
-      | .id
-    ' | head -n 1)
-
-    if [ -z "$sub_id" ]; then
-      sub_id=$(echo "$json" | jq -r '
-        .tracks[]
-        | select(.type == "subtitles")
-        | select(.properties.language == "und")
-        | .id
-      ' | head -n 1)
-    fi
-
-    # Safety check
-    if [ -z "$audio_id" ] || [ -z "$sub_id" ]; then
-      echo "  → Skipping (missing ENG/UND audio or subtitle)"
-      echo
-      continue
-    fi
-
-    local outfile="${f%.mkv}[ENG].mkv"
-
-    echo "  → Audio track ID: $audio_id"
-    echo "  → Subtitle track ID: $sub_id"
-    echo "  → Output: $outfile"
-
-    mkvmerge -o "$outfile" \
-      --audio-tracks "$audio_id" \
-      --subtitle-tracks "$sub_id" \
-      --default-track "${audio_id}:true"  --forced-track "${audio_id}:false" \
-      --default-track "${sub_id}:true"    --forced-track "${sub_id}:false" \
-      --language "${audio_id}:eng" \
-      --language "${sub_id}:eng" \
-      --track-name "${audio_id}:English" \
-      --track-name "${sub_id}:English" \
-      "$f"
-
-    echo
-  done
+# Select full English dialogue tracks from mkvmerge JSON on stdin.
+# Keep this separate so the selection policy can be tested without remuxing.
+_mkveng_select_tracks() {
+  jq -c '
+    def named($pattern): (.properties.track_name // "" | test($pattern; "i"));
+    def english:
+      .properties.language == "eng" or
+      (.properties.language_ietf // "" | test("^en(-|$)"; "i"));
+    def commentary:
+      .properties.flag_commentary == true or named("commentary");
+    def partial:
+      .properties.forced_track == true or
+      named("\\b(forced|signs?|songs?)\\b");
+    def sdh:
+      .properties.flag_hearing_impaired == true or
+      named("\\b(SDH|CC)\\b|hearing[ -]impaired|closed[ -]captions?");
+    def cues: (.properties.tag_number_of_frames // "0" | tonumber? // 0);
+    def span:
+      try (.properties.tag_duration | split(":") | map(tonumber) |
+        .[0] * 3600 + .[1] * 60 + .[2]) catch 0;
+    . as $source |
+    [.tracks[] | select(.type == "audio" and english and (commentary | not))
+      | select((.properties.flag_visual_impaired // false) == false)
+      | select(named("audio description|descriptive audio") | not)] as $audio |
+    [.tracks[] | select(.type == "subtitles" and english and (commentary | not))] as $english |
+    [$english[] | select(partial | not)] as $full |
+    ([$english[] | cues] | max // 0) as $max_cues |
+    (($source.container.properties.duration // 0) / 1000000000) as $duration |
+    # Counts and time spans are only suspicion checks, not a quality ranking.
+    # A tiny track relative to another English track, or a sparse short span
+    # in a long video, needs manual selection. Missing statistics are unknown.
+    [$full[] | select(
+      ((cues > 0 and $max_cues >= 100 and cues < $max_cues * 0.25) or
+       (cues > 0 and cues < 100 and span > 0 and $duration >= 1200 and
+        span < $duration * 0.2)) | not)] as $safe |
+    [$safe[] | select(sdh | not)] as $ordinary |
+    (if ($ordinary | length) > 0 then $ordinary else $safe end) as $preferred |
+    if ($audio | length) == 0 then {error: "no identified English main audio"}
+    elif ($full | length) == 0 then {error: "no identified full English subtitle track"}
+    elif ($safe | length) == 0 then {error: "English subtitles look sparse; inspect with mkvlang/mkveng"}
+    elif ($preferred | length) != 1 then {error: "multiple full English subtitle candidates; select manually with mkveng"}
+    else {
+      audio: ($audio | sort_by(if .properties.default_track then 0 else 1 end, .id) | first),
+      subtitle: $preferred[0],
+      reason: (if ($preferred[0] | sdh) then "full English SDH/CC fallback"
+               else "full English dialogue" end),
+      subtitle_name: (if ($preferred[0] | sdh) then "English (SDH)" else "English" end)
+    } end
+  '
 }
 
-# Clean up MKV files in a directory - removes non [ENG] tags updates filenames
+# Recursively remux English main audio and full dialogue subtitles.
+# Preview choices without writing media: mkvengdir --dry-run /path/to/movies
+# Ambiguous/unknown-language tracks require explicit IDs via mkveng.
+mkvengdir() {
+  local dry_run=false
+  if [[ "$1" == "--dry-run" ]]; then
+    dry_run=true
+    shift
+  fi
+  local dir="$1"
+  if [[ $# != 1 || ! -d "$dir" ]]; then
+    echo "Usage: mkvengdir [--dry-run] <directory>"
+    return 1
+  fi
+  local dependency
+  for dependency in mkvmerge jq; do
+    command -v "$dependency" >/dev/null || {
+      echo "Missing dependency: $dependency"
+      return 1
+    }
+  done
+  # Absolute paths also handle a directory argument beginning with a dash.
+  dir="${dir:A}"
+  local f outfile json selection problem audio_id sub_id sub_name original_name
+  local temp_dir temp_file output_json mux_rc
+  local failures=0
+  while IFS= read -r -d '' f; do
+    outfile="${f%.mkv}[ENG].mkv"
+    if [[ -e "$outfile" || -L "$outfile" ]]; then
+      printf 'Skipping existing output: %s\n' "$outfile"
+      continue
+    fi
+    printf 'Processing: %s\n' "$f"
+    if ! json=$(mkvmerge -J "$f") || ! selection=$(printf '%s' "$json" | _mkveng_select_tracks); then
+      echo "  Skipping: could not inspect tracks"
+      failures=$((failures + 1))
+      continue
+    fi
+    problem=$(printf '%s' "$selection" | jq -r '.error // empty')
+    if [[ -n "$problem" ]]; then
+      printf '  Skipping: %s\n' "$problem"
+      failures=$((failures + 1))
+      continue
+    fi
+    audio_id=$(printf '%s' "$selection" | jq -r '.audio.id')
+    sub_id=$(printf '%s' "$selection" | jq -r '.subtitle.id')
+    sub_name=$(printf '%s' "$selection" | jq -r '.subtitle_name')
+    original_name=$(printf '%s' "$selection" | jq -r '.subtitle.properties.track_name // "(unnamed)"')
+    printf '  Audio track ID: %s\n  Subtitle track ID: %s (%s)\n' "$audio_id" "$sub_id" "$original_name"
+    printf '  Reason: %s\n  Output: %s\n' "$(printf '%s' "$selection" | jq -r '.reason')" "$outfile"
+    [[ "$dry_run" == true ]] && continue
+
+    # Publish only a complete, checked file. A hard link on the same filesystem
+    # refuses an existing destination, including one created during the remux.
+    temp_dir=$(mktemp -d "${f:h}/.mkveng.XXXXXX") || return 1
+    temp_file="$temp_dir/output.mkv"
+    mkvmerge -o "$temp_file" \
+      --audio-tracks "$audio_id" --subtitle-tracks "$sub_id" \
+      --default-track "${audio_id}:true" --forced-track "${audio_id}:false" \
+      --default-track "${sub_id}:true" --forced-track "${sub_id}:false" \
+      --language "${audio_id}:eng" --language "${sub_id}:eng" \
+      --track-name "${audio_id}:English" --track-name "${sub_id}:${sub_name}" \
+      "$f"
+    mux_rc=$?
+    # mkvmerge exit 1 means warnings; still inspect the resulting container.
+    if (( mux_rc > 1 )) || ! output_json=$(mkvmerge -J "$temp_file") ||
+       ! printf '%s' "$output_json" | jq -e --argjson selected "$selection" '
+         [.tracks[] | select(.type == "audio")] as $audio |
+         [.tracks[] | select(.type == "subtitles")] as $subs |
+         ($audio | length) == 1 and ($subs | length) == 1 and
+         $audio[0].properties.language == "eng" and
+         $subs[0].properties.language == "eng" and
+         $subs[0].properties.default_track == true and
+         $subs[0].properties.forced_track == false and
+         $subs[0].properties.track_name == $selected.subtitle_name and
+         $subs[0].codec == $selected.subtitle.codec and
+         (($selected.subtitle.properties.tag_number_of_frames // null) == null or
+          $subs[0].properties.tag_number_of_frames == $selected.subtitle.properties.tag_number_of_frames)
+       ' >/dev/null; then
+      printf '  Failed remux or verification; inspect temporary output: %s\n' "$temp_dir"
+      failures=$((failures + 1))
+      continue
+    fi
+    if ln "$temp_file" "$outfile"; then
+      rm -- "$temp_file"
+      rmdir -- "$temp_dir"
+      printf '  Verified: %s\n' "$outfile"
+    else
+      printf '  Could not publish output; retained: %s\n' "$temp_file"
+      failures=$((failures + 1))
+    fi
+  done < <(find "$dir" -type d -name '.mkveng.*' -prune -o \
+    -type f -name '*.mkv' ! -name '*[[]ENG[]]*' -print0)
+  if (( failures > 0 )); then
+    printf 'Could not process %d file(s); see reasons above.\n' "$failures"
+    return 1
+  fi
+}
+
+# Clean up MKV files in a directory: for each literal [ENG] file, remove its
+# untagged counterpart if present, then remove the tag from the retained file.
 # Parameter:
 # 1. The input directory
-# Example: clean_eng_mkvs /path/to/movies
+# Example: cleanNonEngMkvs /path/to/movies
 cleanNonEngMkvs() {
   local target_dir="$1"
+  local file destination reply
+  local -a eng_files non_eng_files destinations
 
   if [[ -z "$target_dir" ]]; then
-    echo "Usage: clean_eng_mkvs /path/to/directory"
+    echo "Usage: cleanNonEngMkvs /path/to/directory"
     return 1
   fi
 
@@ -308,12 +373,84 @@ cleanNonEngMkvs() {
     return 1
   fi
 
-  # Remove all non-[ENG] MKVs
-  find "$target_dir" -type f -name "*.mkv" ! -name "*[ENG]*" -exec rm -f {} +
+  # [ENG] must be expressed as literal brackets in a find glob. Plain [ENG]
+  # means "one E, N, or G character" and does not match the literal tag.
+  while IFS= read -r -d '' file; do
+    eng_files+=("$file")
+    destinations+=("${file//\[ENG\]/}")
+  done < <(find "$target_dir" -type f -name '*[[]ENG[]]*.mkv' -print0)
 
-  # Rename [ENG] files to remove the tag
-  find "$target_dir" -type f -name "*[ENG]*.mkv" -print0 | while IFS= read -r -d '' file; do
-    mv "$file" "${file//\[ENG\]/}"
+  # Only an exact untagged counterpart of an [ENG] file may be deleted.
+  # Other untagged episodes must be left alone.
+  for destination in "${destinations[@]}"; do
+    if [[ -f "$destination" && ! -L "$destination" ]]; then
+      non_eng_files+=("$destination")
+    fi
+  done
+
+  # A completed run strips the tags. Refusing an untagged-only directory makes
+  # the function safe to run again instead of deleting its previous outputs.
+  if (( ${#eng_files[@]} == 0 )); then
+    echo "Refusing to make changes: no MKV filename containing literal [ENG] was found."
+    echo "This may already be a directory previously processed by cleanNonEngMkvs."
+    return 1
+  fi
+
+  # Abort before deleting anything if two tagged inputs would become the same
+  # destination, or if a destination exists outside the deletion plan.
+  local i j destination_is_deleted
+  for (( i = 1; i <= ${#destinations[@]}; i++ )); do
+    for (( j = i + 1; j <= ${#destinations[@]}; j++ )); do
+      if [[ "${destinations[$i]}" == "${destinations[$j]}" ]]; then
+        echo "Refusing to make changes: multiple [ENG] files map to '${destinations[$i]}'."
+        return 1
+      fi
+    done
+
+    destination="${destinations[$i]}"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      destination_is_deleted=false
+      for file in "${non_eng_files[@]}"; do
+        if [[ "$file" == "$destination" ]]; then
+          destination_is_deleted=true
+          break
+        fi
+      done
+
+      if [[ "$destination_is_deleted" != true ]]; then
+        echo "Refusing to make changes: rename destination already exists: '$destination'"
+        return 1
+      fi
+    fi
+  done
+
+  echo "Planned MKV cleanup in '$target_dir':"
+  for (( i = 1; i <= ${#eng_files[@]}; i++ )); do
+    echo "  KEEP:   '${eng_files[$i]}'"
+    echo "  RENAME: '${destinations[$i]}'"
+  done
+  for file in "${non_eng_files[@]}"; do
+    echo "  DELETE: '$file'"
+  done
+  echo
+  printf "Delete %d untagged MKV(s) and rename %d tagged MKV(s)? [y/N] " \
+    "${#non_eng_files[@]}" "${#eng_files[@]}"
+  IFS= read -r reply
+
+  if [[ "$reply" != [yY] && "$reply" != [yY][eE][sS] ]]; then
+    echo "No changes made."
+    return 0
+  fi
+
+  if (( ${#non_eng_files[@]} > 0 )); then
+    rm -f -- "${non_eng_files[@]}" || {
+      echo "Error: failed to delete one or more untagged MKVs; no renames attempted."
+      return 1
+    }
+  fi
+
+  for (( i = 1; i <= ${#eng_files[@]}; i++ )); do
+    mv -- "${eng_files[$i]}" "${destinations[$i]}" || return 1
   done
 }
 
